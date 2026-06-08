@@ -46,18 +46,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var eventHandlerRef: EventHandlerRef?
     
     var previouslyActiveApp: NSRunningApplication?
+    var pinnedItems: [String] = []
     
-    var autoPasteEnabled: Bool {
-        get {
-            if UserDefaults.standard.object(forKey: "autoPasteEnabled") == nil {
-                return true
-            }
-            return UserDefaults.standard.bool(forKey: "autoPasteEnabled")
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "autoPasteEnabled")
-        }
-    }
     
     var launchAtLoginEnabled: Bool {
         get {
@@ -107,6 +97,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         
         // Load data
         loadHistory()
+        loadPinnedItems()
         loadShortcutPreference()
         
         // Initialize menu
@@ -132,6 +123,46 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         UserDefaults.standard.set(clipboardHistory, forKey: "clipboardHistory")
     }
     
+    func loadPinnedItems() {
+        if let saved = UserDefaults.standard.stringArray(forKey: "pinnedItems") {
+            pinnedItems = saved
+        }
+    }
+    
+    func savePinnedItems() {
+        UserDefaults.standard.set(pinnedItems, forKey: "pinnedItems")
+    }
+    
+    func togglePinItem(_ text: String) {
+        if let index = pinnedItems.firstIndex(of: text) {
+            pinnedItems.remove(at: index)
+            
+            if let histIndex = clipboardHistory.firstIndex(of: text) {
+                clipboardHistory.remove(at: histIndex)
+            }
+            clipboardHistory.insert(text, at: 0)
+            if clipboardHistory.count > maxHistoryItems {
+                clipboardHistory.removeLast()
+            }
+            
+            savePinnedItems()
+            saveHistory()
+            setupMenu()
+        } else {
+            if pinnedItems.count >= 5 {
+                NSSound.beep()
+            } else {
+                pinnedItems.append(text)
+                if let histIndex = clipboardHistory.firstIndex(of: text) {
+                    clipboardHistory.remove(at: histIndex)
+                }
+                savePinnedItems()
+                saveHistory()
+                setupMenu()
+            }
+        }
+    }
+    
     func loadShortcutPreference() {
         if let savedRaw = UserDefaults.standard.string(forKey: "selectedShortcut"),
            let preset = ShortcutPreset(rawValue: savedRaw) {
@@ -147,7 +178,39 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let header = NSMenuItem(title: "Clipboard Manager", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
+        
+        // Help tip
+        let tipItem = NSMenuItem(title: "Hold ⌥ Option + Click to Pin/Unpin", action: nil, keyEquivalent: "")
+        tipItem.isEnabled = false
+        tipItem.attributedTitle = NSAttributedString(string: "Hold ⌥ Option + Click to Pin/Unpin", attributes: [
+            .font: NSFont.systemFont(ofSize: 10),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ])
+        menu.addItem(tipItem)
         menu.addItem(NSMenuItem.separator())
+        
+        // Pinned Items Section
+        if !pinnedItems.isEmpty {
+            let pinnedHeader = NSMenuItem(title: "Pinned Items", action: nil, keyEquivalent: "")
+            pinnedHeader.isEnabled = false
+            pinnedHeader.attributedTitle = NSAttributedString(string: "📌 PINNED", attributes: [
+                .font: NSFont.boldSystemFont(ofSize: 10),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ])
+            menu.addItem(pinnedHeader)
+            
+            for item in pinnedItems {
+                let singleLineText = item.replacingOccurrences(of: "\n", with: " ")
+                let displayTitle = singleLineText.count > 45 ? String(singleLineText.prefix(42)) + "..." : singleLineText
+                
+                let menuItem = NSMenuItem(title: "📌 " + displayTitle, action: #selector(copyItem(_:)), keyEquivalent: "")
+                menuItem.representedObject = item
+                menuItem.target = self
+                menuItem.toolTip = item
+                menu.addItem(menuItem)
+            }
+            menu.addItem(NSMenuItem.separator())
+        }
         
         // Clipboard History Items
         if clipboardHistory.isEmpty {
@@ -200,11 +263,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         launchItem.state = launchAtLoginEnabled ? .on : .off
         menu.addItem(launchItem)
         
-        // Auto-Paste on Select checkbox
-        let autoPasteItem = NSMenuItem(title: "Auto-Paste on Select", action: #selector(toggleAutoPaste(_:)), keyEquivalent: "")
-        autoPasteItem.target = self
-        autoPasteItem.state = autoPasteEnabled ? .on : .off
-        menu.addItem(autoPasteItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -224,22 +282,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupMenu()
     }
     
-    @objc func toggleAutoPaste(_ sender: NSMenuItem) {
-        autoPasteEnabled.toggle()
-        
-        if autoPasteEnabled {
-            let isTrusted = AXIsProcessTrusted()
-            if !isTrusted {
-                let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-                AXIsProcessTrustedWithOptions(options)
-            }
-        }
-        
-        setupMenu()
-    }
     
     @objc func copyItem(_ sender: NSMenuItem) {
         guard let text = sender.representedObject as? String else { return }
+        
+        // If Option key is pressed, toggle pin status
+        if NSEvent.modifierFlags.contains(.option) {
+            togglePinItem(text)
+            return
+        }
         
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -251,36 +302,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Restore focus to previously active app
         if let prevApp = previouslyActiveApp {
             prevApp.activate(options: .activateIgnoringOtherApps)
-            
-            // Auto-paste if enabled
-            if autoPasteEnabled {
-                if AXIsProcessTrusted() {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        self.simulatePaste()
-                    }
-                } else {
-                    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-                    AXIsProcessTrustedWithOptions(options)
-                }
-            }
-            
             previouslyActiveApp = nil
         }
-    }
-    
-    func simulatePaste() {
-        let source = CGEventSource(stateID: .hidSystemState)
-        
-        // Command + V keydown (0x09 is kVK_ANSI_V)
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true) else { return }
-        keyDown.flags = .maskCommand
-        
-        // Command + V keyup
-        guard let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false) else { return }
-        keyUp.flags = .maskCommand
-        
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
     }
     
     @objc func clearHistory() {
@@ -327,6 +350,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let newString = pasteboard.string(forType: .string) {
             let trimmed = newString.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
+            
+            // If the item is already pinned, copying it again shouldn't duplicate it in history
+            if pinnedItems.contains(trimmed) {
+                return
+            }
             
             // Avoid duplicate items, move existing to top
             if let index = clipboardHistory.firstIndex(of: trimmed) {
