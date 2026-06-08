@@ -10,3 +10,4 @@ ClipboardManager.app
 *.xcodeproj/
 build/
 DerivedData/
+.module-cache/
