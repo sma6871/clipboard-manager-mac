@@ -1,0 +1,12 @@
+# Build output
+ClipboardManager.dmg
+ClipboardManager.app
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Xcode (if you ever add it)
+*.xcodeproj/
+build/
+DerivedData/
